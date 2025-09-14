@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"http.server/internal/headers"
 	"http.server/internal/utils"
 )
 
@@ -14,12 +15,15 @@ type ParseState int
 
 const (
 	Initialized ParseState = iota
+	RequestStateParsingHeaders
+	RequestStateDone
 	Done
 )
 
 type Request struct {
 	RequestLine RequestLine
 	state       ParseState
+	Headers     headers.Headers
 }
 
 type RequestLine struct {
@@ -36,7 +40,8 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	readToIndex := 0
 
 	request := &Request{
-		state: Initialized,
+		state:   Initialized,
+		Headers: headers.NewHeaders(),
 	}
 
 	for request.state != Done {
@@ -58,7 +63,8 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 
 		numBytesParsed, err := request.parse(buf[:readToIndex])
 		if err != nil {
-			return nil, err
+			// TODO: Temporary, return nil later
+			return request, err
 		}
 
 		copy(buf, buf[numBytesParsed:])
@@ -113,8 +119,22 @@ func (r *Request) parse(data []byte) (int, error) {
 			return 0, nil
 		}
 		r.RequestLine = *requestLine
-		r.state = Done
+		r.state = RequestStateParsingHeaders
 		return n, nil
+	case RequestStateParsingHeaders:
+		n, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			return 0, nil
+		}
+		if done {
+			r.state = RequestStateDone
+		}
+		totalBytesParsed := n
+
+		return totalBytesParsed, nil
 	case Done:
 		return 0, fmt.Errorf("error: trying to read data in a done state")
 	default:
