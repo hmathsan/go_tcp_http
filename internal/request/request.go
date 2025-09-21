@@ -112,6 +112,21 @@ func parseRequestLine(data []byte) (*RequestLine, int, error) {
 }
 
 func (r *Request) parse(data []byte) (int, error) {
+	totalBytesParsed := 0
+	for r.state != Done {
+		n, err := r.parseSingle(data[totalBytesParsed:])
+		if err != nil {
+			return 0, err
+		}
+		totalBytesParsed += n
+		if n == 0 {
+			break
+		}
+	}
+	return totalBytesParsed, nil
+}
+
+func (r *Request) parseSingle(data []byte) (int, error) {
 	switch r.state {
 	case Initialized:
 		requestLine, n, err := parseRequestLine(data)
