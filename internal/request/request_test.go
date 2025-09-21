@@ -149,7 +149,7 @@ func Test_RequestLineParse_InvalidHttpVersion(t *testing.T) {
 	assert.Equal(t, "invalid HTTP version", err.Error())
 }
 
-func Test_RequestLineParse_CorrectHeaderParse(t *testing.T) {
+func Test_HeaderParse_CorrectHeader(t *testing.T) {
 	// Test: Valid header parse
 	reader := &chunkReader{
 		data:            "GET / HTTP/1.1\r\nHost: localhost:42069\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n",
@@ -163,24 +163,24 @@ func Test_RequestLineParse_CorrectHeaderParse(t *testing.T) {
 	assert.Equal(t, "*/*", r.Headers["accept"])
 }
 
-func Test_RequestLineParse_MalformedHeaderParse(t *testing.T) {
+func Test_HeaderParse_MalformedHeader(t *testing.T) {
 	// Test: Malformed header (missing ':')
 	reader := &chunkReader{
 		data:            "GET / HTTP/1.1\r\nHost localhost:42069\r\n\r\n",
 		numBytesPerRead: 3,
 	}
-	_, err := RequestFromReader(reader)
+	r, err := RequestFromReader(reader)
 	require.Error(t, err)
+	assert.Nil(t, r)
 
 	// Test: Empty headers
 	reader = &chunkReader{
 		data:            "GET / HTTP/1.1\r\n\r\n\r\n",
 		numBytesPerRead: 3,
 	}
-	r, err := RequestFromReader(reader)
-	assert.Error(t, err)
+	r, err = RequestFromReader(reader)
+	assert.NoError(t, err)
 	assert.NotNil(t, r)
-	assert.Equal(t, 0, len(r.Headers))
 
 	// Test: Duplicate headers
 	reader = &chunkReader{
@@ -191,4 +191,99 @@ func Test_RequestLineParse_MalformedHeaderParse(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 	assert.Equal(t, "localhost:42069, example.com", r.Headers["host"])
+}
+
+func Test_RequestBodyParse_StandardBody(t *testing.T) {
+	// Test: Standard Body
+	reader := &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"Content-Length: 13\r\n" +
+			"\r\n" +
+			"hello world!\n",
+		numBytesPerRead: 3,
+	}
+	r, err := RequestFromReader(reader)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.Equal(t, "hello world!\n", string(r.Body))
+
+	// Test: Empty Body
+	reader = &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"Content-Length: 0\r\n" +
+			"\r\n",
+		numBytesPerRead: 3,
+	}
+	r, err = RequestFromReader(reader)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.Equal(t, "", string(r.Body))
+
+	// Test: Empty Body with no Content-Length
+	reader = &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"\r\n",
+		numBytesPerRead: 3,
+	}
+	r, err = RequestFromReader(reader)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.Equal(t, "", string(r.Body))
+
+	// Test: Body exists but no Content-Length header
+	reader = &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"\r\n" +
+			"hello world!\n",
+		numBytesPerRead: 3,
+	}
+	r, err = RequestFromReader(reader)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.Equal(t, "", string(r.Body))
+}
+
+func Test_RequestBodyParse_ErrorScenarios(t *testing.T) {
+	// Test: Content-Length is not a number
+	reader := &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"Content-Length: abc\r\n" +
+			"\r\n" +
+			"hello world!\n",
+		numBytesPerRead: 3,
+	}
+	_, err := RequestFromReader(reader)
+	require.Error(t, err)
+	assert.Equal(t, "invalid content-length: abc", err.Error())
+
+	// Test: Body length less than Content-Length
+	reader = &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"Content-Length: 20\r\n" +
+			"\r\n" +
+			"hello world!\n",
+		numBytesPerRead: 3,
+	}
+	_, err = RequestFromReader(reader)
+	require.Error(t, err)
+	assert.Equal(t, "body length less than Content-Length", err.Error())
+
+	// Test: Body length greater than Content-Length
+	reader = &chunkReader{
+		data: "POST /submit HTTP/1.1\r\n" +
+			"Host: localhost:42069\r\n" +
+			"Content-Length: 5\r\n" +
+			"\r\n" +
+			"hello world!\n",
+		numBytesPerRead: 3,
+	}
+	_, err = RequestFromReader(reader)
+	require.Error(t, err)
+	assert.Equal(t, "body length exceeds Content-Length", err.Error())
 }

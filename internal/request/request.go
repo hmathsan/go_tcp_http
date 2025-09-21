@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"http.server/internal/headers"
@@ -15,8 +16,9 @@ type ParseState int
 
 const (
 	Initialized ParseState = iota
-	RequestStateParsingHeaders
-	RequestStateDone
+	ParsingHeaders
+	ParsingBody
+	ParsingBodyValidation
 	Done
 )
 
@@ -24,6 +26,7 @@ type Request struct {
 	RequestLine RequestLine
 	state       ParseState
 	Headers     headers.Headers
+	Body        []byte
 }
 
 type RequestLine struct {
@@ -42,6 +45,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	request := &Request{
 		state:   Initialized,
 		Headers: headers.NewHeaders(),
+		Body:    []byte{},
 	}
 
 	for request.state != Done {
@@ -54,17 +58,16 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		numBytesRead, err := reader.Read(buf[readToIndex:])
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				request.state = Done
-				break
+				request.state = ParsingBodyValidation
+			} else {
+				return nil, err
 			}
-			return nil, err
 		}
 		readToIndex += numBytesRead
 
 		numBytesParsed, err := request.parse(buf[:readToIndex])
 		if err != nil {
-			// TODO: Temporary, return nil later
-			return request, err
+			return nil, err
 		}
 
 		copy(buf, buf[numBytesParsed:])
@@ -119,9 +122,9 @@ func (r *Request) parse(data []byte) (int, error) {
 			return 0, nil
 		}
 		r.RequestLine = *requestLine
-		r.state = RequestStateParsingHeaders
+		r.state = ParsingHeaders
 		return n, nil
-	case RequestStateParsingHeaders:
+	case ParsingHeaders:
 		n, done, err := r.Headers.Parse(data)
 		if err != nil {
 			return 0, err
@@ -130,13 +133,51 @@ func (r *Request) parse(data []byte) (int, error) {
 			return 0, nil
 		}
 		if done {
-			r.state = RequestStateDone
+			r.state = ParsingBody
 		}
 		totalBytesParsed := n
 
 		return totalBytesParsed, nil
+	case ParsingBody:
+		if len(r.Body) == 0 {
+			contentLength := r.Headers.Get("content-length")
+			if (contentLength == "") || (contentLength == "0") {
+				r.state = Done
+				return 0, nil
+			}
+			contentLen, err := strconv.Atoi(contentLength)
+			if err != nil || contentLen < 0 {
+				return 0, fmt.Errorf("invalid content-length: %v", contentLength)
+			}
+		}
+
+		r.Body = append(r.Body, data...)
+
+		return len(data), nil
+	case ParsingBodyValidation:
+		contentLength := r.Headers.Get("content-length")
+		if (contentLength == "") || (contentLength == "0") {
+			r.state = Done
+			return 0, nil
+		}
+
+		contentLen, err := strconv.Atoi(contentLength)
+		if err != nil {
+			return 0, fmt.Errorf("invalid content-length: %v", err)
+		}
+		if len(r.Body) > contentLen {
+			return 0, fmt.Errorf("body length exceeds Content-Length")
+		}
+		if len(r.Body) < contentLen {
+			return 0, fmt.Errorf("body length less than Content-Length")
+		}
+		if len(r.Body) == contentLen {
+			r.state = Done
+		}
+
+		return 0, nil
 	case Done:
-		return 0, fmt.Errorf("error: trying to read data in a done state")
+		return 0, nil
 	default:
 		return 0, fmt.Errorf("error: unknown state %d", r.state)
 	}
